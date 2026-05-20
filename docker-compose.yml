@@ -1,0 +1,53 @@
+services:
+
+  logging-service:
+    build:
+      context: .
+      dockerfile: logging-service/Dockerfile
+    container_name: logging-service
+    ports:
+      - "8001:8001"
+    networks:
+      - banking-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  counter-service:
+    build:
+      context: .
+      dockerfile: counter-service/Dockerfile
+    container_name: counter-service
+    ports:
+      - "8002:8002"
+    networks:
+      - banking-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  facade-service:
+    build:
+      context: .
+      dockerfile: facade-service/Dockerfile
+    container_name: facade-service
+    ports:
+      - "8000:8000"
+    networks:
+      - banking-net
+    depends_on:
+      logging-service:
+        condition: service_healthy
+      counter-service:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  banking-net:
+    driver: bridge
