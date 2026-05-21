@@ -1,5 +1,22 @@
 services:
 
+  config-server:
+    build:
+      context: .
+      dockerfile: config-server/Dockerfile
+    container_name: config-server
+    ports:
+      - "8085:8080"
+    networks:
+      - banking-net
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   hz1:
     image: hazelcast/hazelcast:5.5
     container_name: hz1
@@ -44,10 +61,16 @@ services:
       - INSTANCE_ID=1
       - HZ_MEMBER=hz1:5701
       - PORT=8001
+      - CONFIG_SERVER=http://config-server:8080
+      - PYTHONUNBUFFERED=1
+      - MY_URL=http://logging-service-1:8001
     networks:
       - banking-net
     depends_on:
-      - hz1
+      config-server:
+        condition: service_healthy
+      hz1:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 5s
@@ -63,10 +86,16 @@ services:
       - INSTANCE_ID=2
       - HZ_MEMBER=hz2:5701
       - PORT=8001
+      - CONFIG_SERVER=http://config-server:8080
+      - PYTHONUNBUFFERED=1
+      - MY_URL=http://logging-service-2:8001
     networks:
       - banking-net
     depends_on:
-      - hz2
+      config-server:
+        condition: service_healthy
+      hz2:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 5s
@@ -82,10 +111,16 @@ services:
       - INSTANCE_ID=3
       - HZ_MEMBER=hz3:5701
       - PORT=8001
+      - CONFIG_SERVER=http://config-server:8080
+      - PYTHONUNBUFFERED=1
+      - MY_URL=http://logging-service-3:8001
     networks:
       - banking-net
     depends_on:
-      - hz3
+      config-server:
+        condition: service_healthy
+      hz3:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 5s
@@ -100,11 +135,19 @@ services:
     environment:
       - MONGO_URI=mongodb://mongo:27017
       - MONGO_DB=counter_db
+      - HZ_MEMBERS=hz1:5701,hz2:5701,hz3:5701
+      - CONFIG_SERVER=http://config-server:8080
+      - PYTHONUNBUFFERED=1
+      - MY_URL=http://counter-service:8002
     networks:
       - banking-net
     depends_on:
+      config-server:
+        condition: service_healthy
       mongo:
         condition: service_healthy
+      hz1:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
       interval: 5s
@@ -116,11 +159,15 @@ services:
       context: .
       dockerfile: facade-service/Dockerfile
     container_name: facade-service
+    environment:
+      - PYTHONUNBUFFERED=1
     ports:
       - "8000:8000"
     networks:
       - banking-net
     depends_on:
+      config-server:
+        condition: service_healthy
       logging-service-1:
         condition: service_healthy
       logging-service-2:

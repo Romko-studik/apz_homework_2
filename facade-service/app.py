@@ -4,6 +4,7 @@ import random
 import time
 import uuid
 
+import hazelcast
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -17,38 +18,35 @@ logging.getLogger("uvicorn.access").addFilter(NoHealthFilter())
 
 app = FastAPI(title="Facade Service")
 
-LOGGING_SERVICES = [
-    "http://logging-service-1:8001",
-    "http://logging-service-2:8001",
-    "http://logging-service-3:8001",
-]
-COUNTER_SERVICE_URL = "http://counter-service:8002"
+CONFIG_SERVER = "http://config-server:8080"
+HZ_MEMBERS = ["hz1:5701", "hz2:5701", "hz3:5701"]
 
 timing_stats = {
     "logging_network_total": 0.0,
     "counter_network_total": 0.0,
     "logging_processing_total": 0.0,
-    "counter_processing_total": 0.0,
     "call_count": 0,
 }
 
 http_client: httpx.AsyncClient = None
 logging_clients: dict = {}
+hz_client = None
+counter_queue = None
 
 
 @app.on_event("startup")
 async def startup():
-    global http_client, logging_clients
-    # Increased limits to handle the higher throughput
+    global http_client, logging_clients, hz_client, counter_queue
     http_client = httpx.AsyncClient(
-        timeout=5.0,
+        timeout=httpx.Timeout(10.0, connect=2.0, read=2.0),
         limits=httpx.Limits(max_connections=200, max_keepalive_connections=50),
     )
-    for url in LOGGING_SERVICES:
-        logging_clients[url] = httpx.AsyncClient(
-            timeout=5.0,
-            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
-        )
+    hz_client = hazelcast.HazelcastClient(
+        cluster_members=HZ_MEMBERS,
+        cluster_name="dev",
+    )
+    counter_queue = hz_client.get_queue("counter-queue")
+    print("[Facade] Connected to Hazelcast queue")
 
 
 @app.on_event("shutdown")
@@ -56,6 +54,7 @@ async def shutdown():
     await http_client.aclose()
     for client in logging_clients.values():
         await client.aclose()
+    hz_client.shutdown()
 
 
 class TransactionRequest(BaseModel):
@@ -63,26 +62,38 @@ class TransactionRequest(BaseModel):
     amount: float
 
 
-async def timed(coro):
-    t0 = time.perf_counter()
-    resp = await coro
-    return resp, time.perf_counter() - t0
+async def get_logging_urls() -> list:
+    resp = await http_client.get(f"{CONFIG_SERVER}/services/logging-service")
+    return resp.json().get("urls", [])
 
 
-async def call_logging_service(method: str, path: str, **kwargs):
-    instances = LOGGING_SERVICES.copy()
-    random.shuffle(instances)
-    for base_url in instances:
+async def get_counter_url() -> str:
+    resp = await http_client.get(f"{CONFIG_SERVER}/services/counter-service")
+    urls = resp.json().get("urls", [])
+    return urls[0] if urls else None
+
+
+async def call_logging_service(path: str, method: str = "GET", **kwargs):
+    urls = await get_logging_urls()
+    if not urls:
+        raise HTTPException(status_code=502, detail="No logging service instances available")
+    random.shuffle(urls)
+    for url in urls:
+        if url not in logging_clients:
+            logging_clients[url] = httpx.AsyncClient(
+                timeout=5.0,
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            )
         try:
-            url = f"{base_url}{path}"
-            client = logging_clients[base_url]
+            full_url = f"{url}{path}"
             if method == "POST":
-                resp = await client.post(url, **kwargs)
+                resp = await logging_clients[url].post(full_url, **kwargs)
             else:
-                resp = await client.get(url, **kwargs)
-            # Removed print statement
+                resp = await logging_clients[url].get(full_url, **kwargs)
+            print(f"[Facade] {method} {path} -> {url}")
             return resp
         except (httpx.ConnectError, httpx.TimeoutException):
+            print(f"[Facade] {url} unavailable, trying next...")
             continue
     raise HTTPException(status_code=502, detail="All logging service instances unavailable")
 
@@ -98,47 +109,61 @@ async def post_transaction(req: TransactionRequest):
         "amount": req.amount,
     }
 
-    (log_resp, log_time), (counter_resp, counter_time) = await asyncio.gather(
-        timed(call_logging_service("POST", "/log", json=payload)),
-        timed(http_client.post(f"{COUNTER_SERVICE_URL}/transaction", json=payload)),
+    t0_log = time.perf_counter()
+    t0_mq = time.perf_counter()
+
+    loop = asyncio.get_event_loop()
+    log_resp, _ = await asyncio.gather(
+        call_logging_service("/log", method="POST", json=payload),
+        loop.run_in_executor(None, lambda: counter_queue.put(payload).result()),
     )
 
+    log_time = time.perf_counter() - t0_log
+    mq_time = time.perf_counter() - t0_mq
+
     timing_stats["logging_network_total"] += log_time
-    timing_stats["counter_network_total"] += counter_time
+    timing_stats["counter_network_total"] += mq_time
+    timing_stats["call_count"] += 1
     try:
         timing_stats["logging_processing_total"] += log_resp.json().get("processing_ms", 0) / 1000
-        timing_stats["counter_processing_total"] += counter_resp.json().get("processing_ms", 0) / 1000
     except Exception:
         pass
-    timing_stats["call_count"] += 1
 
-    if counter_resp.status_code not in (200, 201):
-        raise HTTPException(status_code=502, detail="Counter service error")
-
-    balance = counter_resp.json()["balance"]
-    # Removed print statement
-    return {"transaction_id": transaction_id, "balance": balance}
+    print(f"[Facade] POST tx={transaction_id} user={req.user_id} amount={req.amount:+.2f} queued")
+    return {"transaction_id": transaction_id, "status": "queued"}
 
 
 @app.get("/user/{user_id}")
 async def get_user(user_id: str):
-    balance_resp, logs_resp = await asyncio.gather(
-        http_client.get(f"{COUNTER_SERVICE_URL}/balance/{user_id}"),
-        call_logging_service("GET", f"/logs/{user_id}"),
-    )
-
-    if balance_resp.status_code == 404:
-        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found")
-
-    balance = balance_resp.json()["balance"]
+    counter_url = await get_counter_url()
+    logs_resp = await call_logging_service(f"/logs/{user_id}")
     transactions = logs_resp.json().get("transactions", [])
+
+    if not counter_url:
+        return {"user_id": user_id, "balance": None, "transactions": transactions,
+                "note": "Counter service unavailable - transactions are queued"}
+    try:
+        balance_resp = await http_client.get(f"{counter_url}/balance/{user_id}")
+        if balance_resp.status_code == 404:
+            return {"user_id": user_id, "balance": None, "transactions": transactions}
+        balance = balance_resp.json()["balance"]
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError):
+        return {"user_id": user_id, "balance": None, "transactions": transactions,
+                "note": "Counter service unavailable - transactions are queued"}
+
     return {"user_id": user_id, "balance": balance, "transactions": transactions}
 
 
 @app.get("/accounts")
 async def get_accounts():
-    resp = await http_client.get(f"{COUNTER_SERVICE_URL}/balances")
-    return {"balances": resp.json()["balances"]}
+    counter_url = await get_counter_url()
+    if not counter_url:
+        return {"balances": None, "note": "Counter service unavailable"}
+    try:
+        resp = await http_client.get(f"{counter_url}/balances")
+        return {"balances": resp.json()["balances"]}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError):
+        return {"balances": None, "note": "Counter service unavailable - transactions are queued"}
 
 
 @app.get("/stats")
@@ -147,19 +172,15 @@ async def get_stats():
     return {
         "call_count": count,
         "logging_network_avg_ms": round(timing_stats["logging_network_total"] / count * 1000, 2) if count else 0,
-        "counter_network_avg_ms": round(timing_stats["counter_network_total"] / count * 1000, 2) if count else 0,
+        "counter_queue_avg_ms": round(timing_stats["counter_network_total"] / count * 1000, 2) if count else 0,
         "logging_processing_avg_ms": round(timing_stats["logging_processing_total"] / count * 1000, 4) if count else 0,
-        "counter_processing_avg_ms": round(timing_stats["counter_processing_total"] / count * 1000, 4) if count else 0,
     }
 
 
 @app.delete("/stats")
 async def reset_stats():
-    timing_stats["logging_network_total"] = 0.0
-    timing_stats["counter_network_total"] = 0.0
-    timing_stats["logging_processing_total"] = 0.0
-    timing_stats["counter_processing_total"] = 0.0
-    timing_stats["call_count"] = 0
+    for k in timing_stats:
+        timing_stats[k] = 0
     return {"status": "reset"}
 
 
@@ -169,4 +190,4 @@ async def health():
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, workers=4)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

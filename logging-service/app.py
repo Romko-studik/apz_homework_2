@@ -3,6 +3,7 @@ import os
 import time
 
 import hazelcast
+import httpx
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -17,6 +18,8 @@ app = FastAPI(title="Logging Service")
 
 INSTANCE_ID = os.environ.get("INSTANCE_ID", "1")
 HZ_MEMBER = os.environ.get("HZ_MEMBER", "hz1:5701")
+CONFIG_SERVER = os.environ.get("CONFIG_SERVER", "http://config-server:8080")
+MY_URL = os.environ.get("MY_URL", "http://logging-service-1:8001")
 
 hz_client = None
 dist_map = None
@@ -33,6 +36,14 @@ def startup():
     dist_map = hz_client.get_map("transactions")
     print(f"[Logging-{INSTANCE_ID}] Connected to Hazelcast at {HZ_MEMBER}")
 
+    import httpx as _httpx
+    with _httpx.Client() as client:
+        client.post(f"{CONFIG_SERVER}/register", json={
+            "service": "logging-service",
+            "url": MY_URL,
+        })
+    print(f"[Logging-{INSTANCE_ID}] Registered with config server as {MY_URL}")
+
 
 @app.on_event("shutdown")
 def shutdown():
@@ -47,13 +58,12 @@ class Transaction(BaseModel):
     amount: float
 
 
-# Changed to standard 'def' so FastAPI runs this in a background thread
 @app.post("/log", status_code=201)
 def log_transaction(tx: Transaction):
     t0 = time.perf_counter()
-    # Use .result() to resolve the Hazelcast Future instead of await
     dist_map.set(tx.transaction_id, tx.dict()).result()
     processing_ms = (time.perf_counter() - t0) * 1000
+    print(f"[Logging-{INSTANCE_ID}] Stored tx={tx.transaction_id} user={tx.user_id} amount={tx.amount:+.2f}")
     return {"status": "stored", "processing_ms": processing_ms}
 
 
