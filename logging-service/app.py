@@ -2,8 +2,8 @@ import logging
 import os
 import time
 
+import consul
 import hazelcast
-import httpx
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -17,36 +17,59 @@ logging.getLogger("uvicorn.access").addFilter(NoHealthFilter())
 app = FastAPI(title="Logging Service")
 
 INSTANCE_ID = os.environ.get("INSTANCE_ID", "1")
-HZ_MEMBER = os.environ.get("HZ_MEMBER", "hz1:5701")
-CONFIG_SERVER = os.environ.get("CONFIG_SERVER", "http://config-server:8080")
-MY_URL = os.environ.get("MY_URL", "http://logging-service-1:8001")
+CONSUL_HOST = os.environ.get("CONSUL_HOST", "consul")
+MY_HOST = os.environ.get("MY_HOST", "logging-service-1")
+MY_PORT = int(os.environ.get("PORT", 8001))
 
 hz_client = None
 dist_map = None
+consul_client = None
+
+
+def get_consul_kv(key: str, default: str = "") -> str:
+    _, data = consul_client.kv.get(key)
+    if data:
+        return data["Value"].decode()
+    return default
 
 
 @app.on_event("startup")
 def startup():
-    global hz_client, dist_map
+    global hz_client, dist_map, consul_client
+
+    consul_client = consul.Consul(host=CONSUL_HOST)
+
+    # Read Hazelcast config from Consul KV
+    hz_member = get_consul_kv(f"hazelcast/member-{INSTANCE_ID}", f"hz{INSTANCE_ID}:5701")
+    hz_cluster = get_consul_kv("hazelcast/cluster-name", "dev")
+
     hz_client = hazelcast.HazelcastClient(
-        cluster_members=[HZ_MEMBER],
-        cluster_name="dev",
+        cluster_members=[hz_member],
+        cluster_name=hz_cluster,
         smart_routing=False,
     )
     dist_map = hz_client.get_map("transactions")
-    print(f"[Logging-{INSTANCE_ID}] Connected to Hazelcast at {HZ_MEMBER}")
+    print(f"[Logging-{INSTANCE_ID}] Connected to Hazelcast at {hz_member}")
 
-    import httpx as _httpx
-    with _httpx.Client() as client:
-        client.post(f"{CONFIG_SERVER}/register", json={
-            "service": "logging-service",
-            "url": MY_URL,
-        })
-    print(f"[Logging-{INSTANCE_ID}] Registered with config server as {MY_URL}")
+    # Register with Consul
+    consul_client.agent.service.register(
+        name="logging-service",
+        service_id=f"logging-service-{INSTANCE_ID}",
+        address=MY_HOST,
+        port=MY_PORT,
+        check=consul.Check.http(
+            f"http://{MY_HOST}:{MY_PORT}/health",
+            interval="10s",
+            timeout="5s",
+        ),
+    )
+    print(f"[Logging-{INSTANCE_ID}] Registered with Consul as {MY_HOST}:{MY_PORT}")
 
 
 @app.on_event("shutdown")
 def shutdown():
+    if consul_client:
+        consul_client.agent.service.deregister(f"logging-service-{INSTANCE_ID}")
     if hz_client:
         hz_client.shutdown()
 

@@ -1,27 +1,53 @@
 services:
 
-  config-server:
-    build:
-      context: .
-      dockerfile: config-server/Dockerfile
-    container_name: config-server
+  # ── Consul ────────────────────────────────────────────────
+  consul:
+    image: hashicorp/consul:1.18
+    container_name: consul
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0
     ports:
-      - "8085:8080"
+      - "8500:8500"
     networks:
       - banking-net
-    environment:
-      - PYTHONUNBUFFERED=1
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      test: ["CMD", "consul", "members"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
+  # ── Consul KV seed ────────────────────────────────────────
+  consul-seed:
+    image: hashicorp/consul:1.18
+    container_name: consul-seed
+    restart: "no"
+    depends_on:
+      consul:
+        condition: service_healthy
+    environment:
+      - CONSUL_HTTP_ADDR=consul:8500
+    entrypoint:
+      - sh
+      - -c
+      - |
+        consul kv put hazelcast/member-1   "hz1:5701"
+        consul kv put hazelcast/member-2   "hz2:5701"
+        consul kv put hazelcast/member-3   "hz3:5701"
+        consul kv put hazelcast/cluster-name "dev"
+        consul kv put mq/hz-members        "hz1:5701,hz2:5701,hz3:5701"
+        consul kv put mq/cluster-name      "dev"
+        consul kv put mq/queue-name        "counter-queue"
+        echo "Consul KV seeded."
+    networks:
+      - banking-net
+
+  # ── Hazelcast cluster ──────────────────────────────────────
   hz1:
     image: hazelcast/hazelcast:5.5
     container_name: hz1
     environment:
       - HZ_CLUSTERNAME=dev
+      - PYTHONUNBUFFERED=1
     networks:
       - banking-net
 
@@ -41,6 +67,7 @@ services:
     networks:
       - banking-net
 
+  # ── MongoDB ───────────────────────────────────────────────
   mongo:
     image: mongo:6
     container_name: mongo
@@ -52,6 +79,7 @@ services:
       timeout: 3s
       retries: 10
 
+  # ── Logging service (3 instances) ─────────────────────────
   logging-service-1:
     build:
       context: .
@@ -59,22 +87,21 @@ services:
     container_name: logging-service-1
     environment:
       - INSTANCE_ID=1
-      - HZ_MEMBER=hz1:5701
       - PORT=8001
-      - CONFIG_SERVER=http://config-server:8080
+      - CONSUL_HOST=consul
+      - MY_HOST=logging-service-1
       - PYTHONUNBUFFERED=1
-      - MY_URL=http://logging-service-1:8001
     networks:
       - banking-net
     depends_on:
-      config-server:
-        condition: service_healthy
+      consul-seed:
+        condition: service_completed_successfully
       hz1:
         condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
-      interval: 5s
-      timeout: 3s
+      interval: 10s
+      timeout: 5s
       retries: 5
 
   logging-service-2:
@@ -84,22 +111,21 @@ services:
     container_name: logging-service-2
     environment:
       - INSTANCE_ID=2
-      - HZ_MEMBER=hz2:5701
       - PORT=8001
-      - CONFIG_SERVER=http://config-server:8080
+      - CONSUL_HOST=consul
+      - MY_HOST=logging-service-2
       - PYTHONUNBUFFERED=1
-      - MY_URL=http://logging-service-2:8001
     networks:
       - banking-net
     depends_on:
-      config-server:
-        condition: service_healthy
+      consul-seed:
+        condition: service_completed_successfully
       hz2:
         condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
-      interval: 5s
-      timeout: 3s
+      interval: 10s
+      timeout: 5s
       retries: 5
 
   logging-service-3:
@@ -109,24 +135,24 @@ services:
     container_name: logging-service-3
     environment:
       - INSTANCE_ID=3
-      - HZ_MEMBER=hz3:5701
       - PORT=8001
-      - CONFIG_SERVER=http://config-server:8080
+      - CONSUL_HOST=consul
+      - MY_HOST=logging-service-3
       - PYTHONUNBUFFERED=1
-      - MY_URL=http://logging-service-3:8001
     networks:
       - banking-net
     depends_on:
-      config-server:
-        condition: service_healthy
+      consul-seed:
+        condition: service_completed_successfully
       hz3:
         condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
-      interval: 5s
-      timeout: 3s
+      interval: 10s
+      timeout: 5s
       retries: 5
 
+  # ── Counter service ───────────────────────────────────────
   counter-service:
     build:
       context: .
@@ -135,39 +161,43 @@ services:
     environment:
       - MONGO_URI=mongodb://mongo:27017
       - MONGO_DB=counter_db
-      - HZ_MEMBERS=hz1:5701,hz2:5701,hz3:5701
-      - CONFIG_SERVER=http://config-server:8080
+      - CONSUL_HOST=consul
+      - MY_HOST=counter-service
+      - PORT=8002
       - PYTHONUNBUFFERED=1
-      - MY_URL=http://counter-service:8002
     networks:
       - banking-net
     depends_on:
-      config-server:
-        condition: service_healthy
+      consul-seed:
+        condition: service_completed_successfully
       mongo:
         condition: service_healthy
       hz1:
         condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
-      interval: 5s
-      timeout: 3s
+      interval: 10s
+      timeout: 5s
       retries: 5
 
+  # ── Facade service ────────────────────────────────────────
   facade-service:
     build:
       context: .
       dockerfile: facade-service/Dockerfile
     container_name: facade-service
-    environment:
-      - PYTHONUNBUFFERED=1
     ports:
       - "8000:8000"
+    environment:
+      - CONSUL_HOST=consul
+      - MY_HOST=facade-service
+      - PORT=8000
+      - PYTHONUNBUFFERED=1
     networks:
       - banking-net
     depends_on:
-      config-server:
-        condition: service_healthy
+      consul-seed:
+        condition: service_completed_successfully
       logging-service-1:
         condition: service_healthy
       logging-service-2:

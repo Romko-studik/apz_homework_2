@@ -7,7 +7,7 @@ import httpx
 FACADE_URL = "http://localhost:8000"
 N = 10000
 CLIENTS = 10
-SEMAPHORE = asyncio.Semaphore(200) 
+SEMAPHORE = asyncio.Semaphore(20)  # max 20 concurrent requests
 
 
 async def worker(user_id: str, n: int):
@@ -45,10 +45,9 @@ async def run_scenario(scenario: int):
         stats = (await client.get(f"{FACADE_URL}/stats")).json()
         accounts = (await client.get(f"{FACADE_URL}/accounts")).json()
 
-    print(f"Logging  network avg : {stats['logging_network_avg_ms']:.2f}ms")
-    print(f"Counter  network avg : {stats['counter_network_avg_ms']:.2f}ms")
-    print(f"Logging  processing avg : {stats['logging_processing_avg_ms']:.4f}ms")
-    print(f"Counter  processing avg : {stats['counter_processing_avg_ms']:.4f}ms")
+    print(f"Logging  network avg : {stats.get('logging_network_avg_ms', 0):.2f}ms")
+    print(f"Counter  queue avg   : {stats.get('counter_queue_avg_ms', stats.get('counter_network_avg_ms', 0)):.2f}ms")
+    print(f"Logging  processing avg : {stats.get('logging_processing_avg_ms', 0):.4f}ms")
 
     balances = accounts["balances"]
     print("\nCorrectness check:")

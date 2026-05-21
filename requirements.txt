@@ -5,3 +5,4 @@ pydantic==2.7.1
 hazelcast-python-client==5.4.0
 motor==3.4.0
 pymongo==4.6.3
+python-consul==1.1.0

@@ -3,8 +3,8 @@ import logging
 import os
 import time
 
+import consul
 import hazelcast
-import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -17,17 +17,25 @@ logging.getLogger("uvicorn.access").addFilter(NoHealthFilter())
 
 app = FastAPI(title="Counter Service")
 
+CONSUL_HOST = os.environ.get("CONSUL_HOST", "consul")
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://mongo:27017")
 MONGO_DB = os.environ.get("MONGO_DB", "counter_db")
-HZ_MEMBERS = os.environ.get("HZ_MEMBERS", "hz1:5701,hz2:5701,hz3:5701").split(",")
-CONFIG_SERVER = os.environ.get("CONFIG_SERVER", "http://config-server:8080")
-MY_URL = os.environ.get("MY_URL", "http://counter-service:8002")
+MY_HOST = os.environ.get("MY_HOST", "counter-service")
+MY_PORT = int(os.environ.get("PORT", 8002))
 
 mongo_client = None
 balances = None
 hz_client = None
 mq = None
 consumer_task = None
+consul_client = None
+
+
+def get_consul_kv(key: str, default: str = "") -> str:
+    _, data = consul_client.kv.get(key)
+    if data:
+        return data["Value"].decode()
+    return default
 
 
 async def consume_queue():
@@ -52,7 +60,14 @@ async def consume_queue():
 
 @app.on_event("startup")
 async def startup():
-    global mongo_client, balances, hz_client, mq, consumer_task
+    global mongo_client, balances, hz_client, mq, consumer_task, consul_client
+
+    consul_client = consul.Consul(host=CONSUL_HOST)
+
+    # Read MQ config from Consul KV
+    hz_members = get_consul_kv("mq/hz-members", "hz1:5701,hz2:5701,hz3:5701").split(",")
+    hz_cluster = get_consul_kv("mq/cluster-name", "dev")
+    queue_name = get_consul_kv("mq/queue-name", "counter-queue")
 
     mongo_client = AsyncIOMotorClient(MONGO_URI)
     balances = mongo_client[MONGO_DB]["balances"]
@@ -60,18 +75,25 @@ async def startup():
     print(f"[Counter] Connected to MongoDB at {MONGO_URI}")
 
     hz_client = hazelcast.HazelcastClient(
-        cluster_members=HZ_MEMBERS,
-        cluster_name="dev",
+        cluster_members=hz_members,
+        cluster_name=hz_cluster,
     )
-    mq = hz_client.get_queue("counter-queue")
-    print(f"[Counter] Listening on counter-queue")
+    mq = hz_client.get_queue(queue_name)
+    print(f"[Counter] Listening on queue '{queue_name}'")
 
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{CONFIG_SERVER}/register", json={
-            "service": "counter-service",
-            "url": MY_URL,
-        })
-    print(f"[Counter] Registered with config server as {MY_URL}")
+    # Register with Consul
+    consul_client.agent.service.register(
+        name="counter-service",
+        service_id="counter-service-1",
+        address=MY_HOST,
+        port=MY_PORT,
+        check=consul.Check.http(
+            f"http://{MY_HOST}:{MY_PORT}/health",
+            interval="10s",
+            timeout="5s",
+        ),
+    )
+    print(f"[Counter] Registered with Consul as {MY_HOST}:{MY_PORT}")
 
     consumer_task = asyncio.create_task(consume_queue())
 
@@ -79,6 +101,8 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     consumer_task.cancel()
+    if consul_client:
+        consul_client.agent.service.deregister("counter-service-1")
     hz_client.shutdown()
     mongo_client.close()
 
@@ -103,4 +127,4 @@ async def health():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+    uvicorn.run(app, host="0.0.0.0", port=MY_PORT)
