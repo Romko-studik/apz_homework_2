@@ -2,3 +2,6 @@ fastapi==0.111.0
 uvicorn[standard]==0.29.0
 httpx==0.27.0
 pydantic==2.7.1
+hazelcast-python-client==5.4.0
+motor==3.4.0
+pymongo==4.6.3

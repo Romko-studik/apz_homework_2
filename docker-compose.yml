@@ -1,15 +1,91 @@
 services:
 
-  logging-service:
+  hz1:
+    image: hazelcast/hazelcast:5.5
+    container_name: hz1
+    environment:
+      - HZ_CLUSTERNAME=dev
+    networks:
+      - banking-net
+
+  hz2:
+    image: hazelcast/hazelcast:5.5
+    container_name: hz2
+    environment:
+      - HZ_CLUSTERNAME=dev
+    networks:
+      - banking-net
+
+  hz3:
+    image: hazelcast/hazelcast:5.5
+    container_name: hz3
+    environment:
+      - HZ_CLUSTERNAME=dev
+    networks:
+      - banking-net
+
+  mongo:
+    image: mongo:6
+    container_name: mongo
+    networks:
+      - banking-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  logging-service-1:
     build:
       context: .
       dockerfile: logging-service/Dockerfile
-    container_name: logging-service
-    ports:
-      - "8001:8001"
+    container_name: logging-service-1
+    environment:
+      - INSTANCE_ID=1
+      - HZ_MEMBER=hz1:5701
+      - PORT=8001
     networks:
       - banking-net
-    restart: unless-stopped
+    depends_on:
+      - hz1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  logging-service-2:
+    build:
+      context: .
+      dockerfile: logging-service/Dockerfile
+    container_name: logging-service-2
+    environment:
+      - INSTANCE_ID=2
+      - HZ_MEMBER=hz2:5701
+      - PORT=8001
+    networks:
+      - banking-net
+    depends_on:
+      - hz2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  logging-service-3:
+    build:
+      context: .
+      dockerfile: logging-service/Dockerfile
+    container_name: logging-service-3
+    environment:
+      - INSTANCE_ID=3
+      - HZ_MEMBER=hz3:5701
+      - PORT=8001
+    networks:
+      - banking-net
+    depends_on:
+      - hz3
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 5s
@@ -21,11 +97,14 @@ services:
       context: .
       dockerfile: counter-service/Dockerfile
     container_name: counter-service
-    ports:
-      - "8002:8002"
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB=counter_db
     networks:
       - banking-net
-    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
       interval: 5s
@@ -42,11 +121,14 @@ services:
     networks:
       - banking-net
     depends_on:
-      logging-service:
+      logging-service-1:
+        condition: service_healthy
+      logging-service-2:
+        condition: service_healthy
+      logging-service-3:
         condition: service_healthy
       counter-service:
         condition: service_healthy
-    restart: unless-stopped
 
 networks:
   banking-net:
