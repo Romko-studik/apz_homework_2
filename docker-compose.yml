@@ -1,0 +1,58 @@
+services:
+  hz1:
+    image: hazelcast/hazelcast:5.5
+    container_name: hz1
+    environment:
+      - HZ_CLUSTERNAME=dev
+      - HAZELCAST_CONFIG=/opt/hazelcast/config/hazelcast.xml
+    ports:
+      - "5701:5701"
+    volumes:
+      - ./config/hazelcast.xml:/opt/hazelcast/config/hazelcast.xml:ro
+    networks:
+      - hz-net
+
+  hz2:
+    image: hazelcast/hazelcast:5.5
+    container_name: hz2
+    environment:
+      - HZ_CLUSTERNAME=dev
+      - HAZELCAST_CONFIG=/opt/hazelcast/config/hazelcast.xml
+    ports:
+      - "5702:5701"
+    volumes:
+      - ./config/hazelcast.xml:/opt/hazelcast/config/hazelcast.xml:ro
+    networks:
+      - hz-net
+
+  hz3:
+    image: hazelcast/hazelcast:5.5
+    container_name: hz3
+    environment:
+      - HZ_CLUSTERNAME=dev
+      - HAZELCAST_CONFIG=/opt/hazelcast/config/hazelcast.xml
+    ports:
+      - "5703:5701"
+    volumes:
+      - ./config/hazelcast.xml:/opt/hazelcast/config/hazelcast.xml:ro
+    networks:
+      - hz-net
+
+  management-center:
+    image: hazelcast/management-center:5.5
+    container_name: management-center
+    ports:
+      - "8090:8080"
+    environment:
+      - MC_DEFAULT_CLUSTER=dev
+      - MC_DEFAULT_CLUSTER_MEMBERS=hz1:5701,hz2:5701,hz3:5701
+    networks:
+      - hz-net
+    depends_on:
+      - hz1
+      - hz2
+      - hz3
+
+networks:
+  hz-net:
+    driver: bridge
