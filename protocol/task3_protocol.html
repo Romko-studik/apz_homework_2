@@ -7802,7 +7802,7 @@ a.anchor-link {
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h1 id="Task-3-%E2%80%94-Microservices-with-Hazelcast">Task 3 — Microservices with Hazelcast<a class="anchor-link" href="#Task-3-%E2%80%94-Microservices-with-Hazelcast">¶</a></h1><p>GitHub: <a href="https://github.com/YOUR_USERNAME/YOUR_REPO/tree/micro_hazelcast">https://github.com/YOUR_USERNAME/YOUR_REPO/tree/micro_hazelcast</a></p>
+<h1 id="Task-3-%E2%80%94-Microservices-with-Hazelcast">Task 3 — Microservices with Hazelcast<a class="anchor-link" href="#Task-3-%E2%80%94-Microservices-with-Hazelcast">¶</a></h1><p>GitHub: <a href="https://github.com/Romko-studik/apz_homework_2/tree/micro_hazelcast">https://github.com/Romko-studik/apz_homework_2/tree/micro_hazelcast</a></p>
 </div>
 </div>
 </div>
@@ -7916,7 +7916,9 @@ a.anchor-link {
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h3 id="4.2-Kill-two-logging-service-instances">4.2 Kill two logging-service instances<a class="anchor-link" href="#4.2-Kill-two-logging-service-instances">¶</a></h3>
+<p><strong>POST and GET with logging-service-1 down:</strong></p>
+<p><img alt="kill logging1" src="./images/fault_logging_1.png"/></p>
+<p>We see that it still works correctly</p>
 </div>
 </div>
 </div>
@@ -7927,9 +7929,7 @@ a.anchor-link {
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<p><strong>POST and GET with logging-service-1 down:</strong></p>
-<p><img alt="kill logging1" src="./images/fault_logging_1.png"/></p>
-<p>We see that it still works correctly</p>
+<h3 id="4.2-Kill-two-logging-service-instances">4.2 Kill two logging-service instances<a class="anchor-link" href="#4.2-Kill-two-logging-service-instances">¶</a></h3>
 </div>
 </div>
 </div>
@@ -8026,7 +8026,7 @@ a.anchor-link {
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
 <p><strong>Scenario 1 — 10 clients x 10K transactions on own accounts:</strong></p>
-<p><img alt="scenario1" src="images/scenario1.png"/></p>
+<p><img alt="scenario1" src="./images/scenario1.png"/></p>
 </div>
 </div>
 </div>
@@ -8038,7 +8038,7 @@ a.anchor-link {
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
 <p><strong>Scenario 2 — 10 clients x 10K transactions on shared account:</strong></p>
-<p><img alt="scenario2" src="images/scenario2.png"/></p>
+<p><img alt="scenario2" src="./images/scenario2.png"/></p>
 </div>
 </div>
 </div>
@@ -8049,14 +8049,7 @@ a.anchor-link {
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h3 id="Performance-analysis">Performance analysis<a class="anchor-link" href="#Performance-analysis">¶</a></h3><p>PASTE YOUR ANALYSIS HERE:</p>
-<ul>
-<li>Task 1 results: req/s, logging avg ms, counter avg ms</li>
-<li>Task 3 results: req/s, logging avg ms, counter avg ms</li>
-<li>Why is Task 3 slower/faster?</li>
-<li>Hazelcast adds network overhead for logging (distributed map vs local dict)</li>
-<li>MongoDB adds persistence overhead for counter (disk vs in-memory)</li>
-</ul>
+<h3 id="Performance-analysis">Performance analysis<a class="anchor-link" href="#Performance-analysis">¶</a></h3><p>We can see that task 3 is slightly slower than task 1 but it's expected - since we are using MongoDB for user storage and Hazelcast for logging. Due to this the individual sppeed of each request execution is up to 250x slower, which is thankfully not that bad considering that it took a fraction of the whole time. Network avarage also slightly increased which is expected as well. However while this setup is working slower its much more robust - with better data handling and more redundancy in case a service fails, which was not there in the first task at all.</p>
 </div>
 </div>
 </div>
